@@ -10,3 +10,10 @@ readme = "README.md"
 repository = "https://github.com/0xhappyboy/dbuni"
 
 [dependencies]
+tokio = { version = "1.53.2", features = ["rt", "rt-multi-thread", "macros"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "mysql"] }
+redis = { version = "1.7.1", features = [
+    "aio",
+    "tokio-comp",
+    "connection-manager",
+] }
