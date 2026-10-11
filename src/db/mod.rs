@@ -1,6 +1,9 @@
 //! Database driver abstraction for dbuni.
+pub(crate) mod mongodb_client;
 pub(crate) mod mysql_client;
+pub(crate) mod postgres_client;
 pub(crate) mod redis_client;
+pub(crate) mod sqlite_client;
 use crate::types::{DBUniDatabase, DBUniError, DBUniResult, DBUniResultT, DBUniValue};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -65,7 +68,11 @@ pub struct DBUniConnectOptions {
     pub user: String,
     pub password: String,
     pub database: String,
+    /// File path for embedded databases such as SQLite.
+    pub path: String,
+    /// Optional driver selector, e.g. "native", "mariadb".
     pub driver: Option<String>,
+    /// Extra driver-specific key-value options.
     pub extra: Vec<(String, String)>,
 }
 impl DBUniConnectOptions {
@@ -82,9 +89,28 @@ impl DBUniConnectOptions {
             user: user.into(),
             password: password.into(),
             database: database.into(),
+            path: String::new(),
             driver: None,
             extra: Vec::new(),
         }
+    }
+    /// Creates options for an embedded database, identified by a file path instead of a host and port.
+    pub fn new_embedded(path: impl Into<String>) -> Self {
+        Self {
+            host: String::new(),
+            port: 0,
+            user: String::new(),
+            password: String::new(),
+            database: String::new(),
+            path: path.into(),
+            driver: None,
+            extra: Vec::new(),
+        }
+    }
+    /// Sets the file path for an embedded database.
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = path.into();
+        self
     }
     pub fn with_driver(mut self, driver: impl Into<String>) -> Self {
         self.driver = Some(driver.into());
@@ -100,7 +126,7 @@ impl DBUniConnectOptions {
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
     }
-    /// Builds a sqlx-compatible connection URL.
+    /// Builds a sqlx-compatible connection URL for network databases.
     pub fn to_url(&self) -> String {
         let scheme = match self.driver.as_deref() {
             Some("mariadb") => "mysql",
@@ -198,12 +224,13 @@ impl DBUniRegistry {
         let mut registry = Self::new();
         registry.register(Arc::new(mysql_client::DBUniMySqlFactory));
         registry.register(Arc::new(redis_client::DBUniRedisFactory));
+        registry.register(Arc::new(postgres_client::DBUniPostgresFactory));
+        registry.register(Arc::new(sqlite_client::DBUniSqliteFactory));
+        registry.register(Arc::new(mongodb_client::DBUniMongoDbFactory));
         registry
     }
 }
 /// The lifecycle state of a [`DBUniClient`].
-///
-/// The client starts in [`DBUniConnectionState::Connected`] right after a successful `connect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DBUniConnectionState {
     /// The client is connected and ready for operations.
@@ -216,7 +243,6 @@ pub enum DBUniConnectionState {
     Failed,
 }
 impl DBUniConnectionState {
-    /// Returns the canonical lowercase key for this state.
     pub const fn as_key(&self) -> &'static str {
         match self {
             DBUniConnectionState::Connected => "connected",
@@ -225,7 +251,6 @@ impl DBUniConnectionState {
             DBUniConnectionState::Failed => "failed",
         }
     }
-    /// Returns a human-readable English label.
     pub const fn as_str(&self) -> &'static str {
         match self {
             DBUniConnectionState::Connected => "Connected",
@@ -234,7 +259,6 @@ impl DBUniConnectionState {
             DBUniConnectionState::Failed => "Failed",
         }
     }
-    /// Returns `true` if the client can still run operations.
     pub const fn is_usable(&self) -> bool {
         matches!(self, DBUniConnectionState::Connected)
     }
@@ -245,21 +269,10 @@ impl std::fmt::Display for DBUniConnectionState {
     }
 }
 /// The single public database client.
-///
-/// Callers obtain one of these through [`DBUniClient::connect`].
-///
-/// - the [`DBUniDatabase`] enum value that identifies the engine,
-/// - the [`DBUniConnectOptions`] used to establish the connection,
-/// - the [`DBUniConnectionState`] describing its lifecycle,
-/// - the concrete driver, hidden behind a boxed trait object.
 pub struct DBUniClient {
-    /// The database engine this client is bound to.
     database: DBUniDatabase,
-    /// The options used to establish the connection.
     options: DBUniConnectOptions,
-    /// The lifecycle state of this client.
     state: DBUniConnectionState,
-    /// The concrete driver, hidden behind a trait object.
     inner: DBUniBoxedConnection,
 }
 impl DBUniClient {
@@ -274,23 +287,18 @@ impl DBUniClient {
             inner,
         })
     }
-    /// Returns the database engine this client is bound to.
     pub fn database(&self) -> DBUniDatabase {
         self.database
     }
-    /// Returns the connection options this client was created with.
     pub fn options(&self) -> &DBUniConnectOptions {
         &self.options
     }
-    /// Returns the current lifecycle state of this client.
     pub fn state(&self) -> DBUniConnectionState {
         self.state
     }
-    /// Returns `true` if the client can still run operations.
     pub fn is_connected(&self) -> bool {
         self.state.is_usable()
     }
-    /// Rejects the call when the client is not usable.
     fn ensure_usable(&self) -> DBUniResultT<()> {
         if self.state.is_usable() {
             Ok(())
@@ -301,7 +309,6 @@ impl DBUniClient {
             )))
         }
     }
-    /// executes a statement and returns a self-describing result.
     pub fn query_raw(
         &mut self,
         statement: &str,
@@ -310,7 +317,6 @@ impl DBUniClient {
         self.ensure_usable()?;
         self.inner.query_raw(statement, params)
     }
-    /// Executes a statement and returns raw rows.
     pub fn query_rows(
         &mut self,
         statement: &str,
@@ -319,7 +325,6 @@ impl DBUniClient {
         self.ensure_usable()?;
         self.inner.query_rows(statement, params)
     }
-    /// executes a statement and maps the first row to `T`.
     pub fn query_one_as<T>(
         &mut self,
         statement: &str,
@@ -335,7 +340,6 @@ impl DBUniClient {
             None => Ok(None),
         }
     }
-    /// executes a statement and maps every row to `T`.
     pub fn query_all_as<T>(
         &mut self,
         statement: &str,
@@ -352,17 +356,14 @@ impl DBUniClient {
         }
         Ok(out)
     }
-    /// Executes a statement that does not return rows.
     pub fn execute(&mut self, statement: &str, params: &[DBUniParam]) -> DBUniResultT<u64> {
         self.ensure_usable()?;
         self.inner.execute(statement, params)
     }
-    /// Checks whether the connection is still alive.
     pub fn ping(&mut self) -> DBUniResultT<()> {
         self.ensure_usable()?;
         self.inner.ping()
     }
-    /// Closes the connection, releasing any driver resources.
     pub fn close(&mut self) -> DBUniResultT<()> {
         if matches!(self.state, DBUniConnectionState::Closed) {
             return Ok(());

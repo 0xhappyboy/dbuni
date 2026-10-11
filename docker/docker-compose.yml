@@ -49,6 +49,59 @@ services:
       timeout: 5s
       retries: 20
       start_period: 10s
+  postgres:
+    image: postgres:17
+    container_name: dbuni-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres123456
+      POSTGRES_DB: testdb
+      TZ: UTC
+    ports:
+      - "5432:5432"
+    volumes:
+      - dbuni_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "testdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+  mongodb:
+    image: mongo:8
+    container_name: dbuni-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root123456
+      MONGO_INITDB_DATABASE: testdb
+      TZ: UTC
+    ports:
+      - "27017:27017"
+    volumes:
+      - dbuni_mongodb_data:/data/db
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "mongosh",
+          "--quiet",
+          "--username",
+          "root",
+          "--password",
+          "root123456",
+          "--authenticationDatabase",
+          "admin",
+          "--eval",
+          "db.adminCommand('ping').ok",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
 volumes:
   dbuni_mysql_data:
   dbuni_redis_data:
+  dbuni_postgres_data:
+  dbuni_mongodb_data:
