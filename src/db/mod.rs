@@ -1,6 +1,9 @@
 //! Database driver abstraction for dbuni.
+pub(crate) mod clickhouse_client;
+pub(crate) mod elasticsearch_client;
 pub(crate) mod mongodb_client;
 pub(crate) mod mysql_client;
+pub(crate) mod neo4j_client;
 pub(crate) mod postgres_client;
 pub(crate) mod redis_client;
 pub(crate) mod sqlite_client;
@@ -227,6 +230,9 @@ impl DBUniRegistry {
         registry.register(Arc::new(postgres_client::DBUniPostgresFactory));
         registry.register(Arc::new(sqlite_client::DBUniSqliteFactory));
         registry.register(Arc::new(mongodb_client::DBUniMongoDbFactory));
+        registry.register(Arc::new(clickhouse_client::DBUniClickHouseFactory));
+        registry.register(Arc::new(elasticsearch_client::DBUniElasticsearchFactory));
+        registry.register(Arc::new(neo4j_client::DBUniNeo4jFactory));
         registry
     }
 }
